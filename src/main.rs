@@ -43,9 +43,9 @@ struct Args {
     #[arg(long, default_value_t = 1000)]
     batch_size: usize,
 
-    /// Enable fast k-mer heuristic pre-filtering before running full HMM DP (5-10x faster)
-    #[arg(long, default_value_t = true)]
-    kmer_filter: bool,
+    /// Disable fast k-mer heuristic pre-filtering
+    #[arg(long)]
+    no_kmer_filter: bool,
 
     /// Minimum matching k-mers required to trigger full HMM profile scan
     #[arg(long, default_value_t = 2)]
@@ -297,14 +297,14 @@ fn group_matches_into_clusters(
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    println!("Initializing TALEFinder with HMMs from {}...", args.hmm_dir);
-    let finder = TALEFinder::new(&args.hmm_dir, args.kmer_filter, args.min_kmers)?;
+    let use_kmer_filter = !args.no_kmer_filter;
+    let finder = TALEFinder::new(&args.hmm_dir, use_kmer_filter, args.min_kmers)?;
 
     println!(
         "Scanning {} for TALE effectors{} (k-mer filter: {})...",
         args.input,
         if args.metagenome { " [metagenomic]" } else { "" },
-        if args.kmer_filter { "enabled" } else { "disabled" }
+        if use_kmer_filter { "enabled" } else { "disabled" }
     );
 
     let mut reader = open_sequence_reader(&args.input)?;
