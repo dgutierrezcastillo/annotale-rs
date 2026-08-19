@@ -1,8 +1,8 @@
-# rust_annotale
+# annotale-rs
 
 A highly optimized, multi-threaded Rust implementation of the **AnnoTALE** (Annotation of TAL Effectors) bioinformatics suite. This toolkit enables high-throughput scanning, analysis, renaming, and comparative genomics of Transcription Activator-Like Effectors (TALEs) in bacterial genomes (e.g., *Xanthomonas* species).
 
-By leveraging Rust's safety guarantees and data-parallelism via `rayon`, `rust_annotale` achieves consistent, ultra-fast performance, solving major computational scaling bottlenecks in the original Java implementation.
+By leveraging Rust's safety guarantees and data-parallelism via `rayon`, `annotale-rs` achieves consistent, ultra-fast performance, solving major computational scaling bottlenecks in the original Java implementation.
 
 ---
 
@@ -10,7 +10,7 @@ By leveraging Rust's safety guarantees and data-parallelism via `rayon`, `rust_a
 
 The suite consists of the following components:
 
-### 1. Main TALE Predictor / Scanner (`rust_annotale`)
+### 1. Main TALE Predictor / Scanner (`annotale-rs`)
 Predicts and maps TALEs in whole-genome, metagenomic, or sequencing datasets supporting FASTA and FASTQ format (both raw and `.gz` compressed) using profile Hidden Markov Models (HMMs).
 * **Usage**:
   ```bash
@@ -98,7 +98,7 @@ Reconstructs hierarchical TALE family assignments using custom glocal dynamic pr
 
 ## Profile Hidden Markov Models (HMMs)
 
-Transcription Activator-Like Effectors (TALEs) possess a highly conserved three-part structural composition. To accurately scan genomes and assemble these proteins, `rust_annotale` relies on three specialized Profile HMMs:
+Transcription Activator-Like Effectors (TALEs) possess a highly conserved three-part structural composition. To accurately scan genomes and assemble these proteins, `annotale-rs` relies on three specialized Profile HMMs:
 
 1. **`starts.hmm` (N-terminus Profile)**: Maps the conserved N-terminal region responsible for type III secretion signals.
 2. **`repeats.hmm` (Tandem Repeat Profile)**: Identifies the canonical 34–35 amino acid repeat sequences in the central DNA-binding domain.
@@ -134,7 +134,7 @@ If you are running a fresh setup, you can download the three required HMM profil
    curl -L -o hmm_profiles/ends.hmm https://raw.githubusercontent.com/Jstacs/AnnoTALE/master/annotale/src/main/resources/annotale/data/ends.hmm
    ```
 
-When running the TALE predictor binary (`rust_annotale`), pass this directory path to the `--hmm-dir` argument:
+When running the TALE predictor binary (`annotale-rs`), pass this directory path to the `--hmm-dir` argument:
 ```bash
 cargo run --release -- --fasta <path_to_genome> --hmm-dir ./hmm_profiles
 ```
@@ -148,8 +148,8 @@ To build and compile all binaries in release mode:
 1. Ensure you have the [Rust Toolchain](https://rustup.rs/) installed.
 2. Clone the repository:
    ```bash
-   git clone https://github.com/dgutierrezcastillo/rust_annotale.git
-   cd rust_annotale
+   git clone https://github.com/dgutierrezcastillo/annotale-rs.git
+   cd annotale-rs
    ```
 3. Compile the release binaries:
    ```bash
@@ -161,11 +161,11 @@ To build and compile all binaries in release mode:
 
 ## Performance Benchmarking
 
-A comprehensive benchmark was conducted comparing the original Java AnnoTALE software against our optimized `rust_annotale` tool across a diverse suite of 6 representative *Xanthomonas* genomes (conducted on a 16-thread CPU):
+A comprehensive benchmark was conducted comparing the original Java AnnoTALE software against our optimized `annotale-rs` tool across a diverse suite of 6 representative *Xanthomonas* genomes (conducted on a 16-thread CPU):
 
 ### Execution Time & Speedup Comparison
 
-| Genome File | Genome Description | Java AnnoTALE Time | Rust `rust_annotale` Time | Speedup Factor |
+| Genome File | Genome Description | Java AnnoTALE Time | Rust `annotale-rs` Time | Speedup Factor |
 | :--- | :--- | :---: | :---: | :---: |
 | **`PX099A.fa`** | *X. oryzae* (High TALE density) | 9m 07.94s | **10.53s** | **52.0x** |
 | **`X11-5Agenome.fasta`** | *X. albilineans* (Low TALE density) | 24.88s | **7.86s** | **3.2x** |
@@ -179,13 +179,13 @@ A comprehensive benchmark was conducted comparing the original Java AnnoTALE sof
 ![Performance Comparison Plot](benchmark_comparison.png)
 
 ### Key Takeaway
-The native Java implementation suffers from exponential search scaling on genomes with high TALE density (like `Xoc_BLS256` or `PX099A`), taking **nearly 15 minutes** to analyze a single genome. In contrast, `rust_annotale` maintains a flat, predictable **8–10 second runtime** across all strains due to highly parallelized, pure Rust HMM scanning and coordinate alignments—representing a **102.4x speedup** on complex biological datasets.
+The native Java implementation suffers from exponential search scaling on genomes with high TALE density (like `Xoc_BLS256` or `PX099A`), taking **nearly 15 minutes** to analyze a single genome. In contrast, `annotale-rs` maintains a flat, predictable **8–10 second runtime** across all strains due to highly parallelized, pure Rust HMM scanning and coordinate alignments—representing a **102.4x speedup** on complex biological datasets.
 
 ---
 
 ## Citation & References
 
-This project is an optimized Rust implementation of the original Java-based AnnoTALE software suite. If you utilize `rust_annotale` in your academic or bioinformatics research, please ensure you cite the original authors and their foundational work:
+This project is an optimized Rust implementation of the original Java-based AnnoTALE software suite. If you utilize `annotale-rs` in your academic or bioinformatics research, please ensure you cite the original authors and their foundational work:
 
 * **Foundational AnnoTALE Publication:**
   > Grau J, Reschke M, Erkes A, Streubel J, Morgan RD, Wilson GG, Koebnik R, Boch J. (2016). *AnnoTALE: bioinformatics tools for identification, annotation, and nomenclature of TALEs from Xanthomonas genomic sequences*. **Scientific Reports**, 6:21077. DOI: [10.1038/srep21077](https://doi.org/10.1038/srep21077)
