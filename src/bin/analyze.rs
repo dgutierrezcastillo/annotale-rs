@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use bio::io::fasta;
 use clap::Parser;
 use rust_annotale::translate;

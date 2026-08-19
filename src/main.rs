@@ -41,6 +41,8 @@ struct Args {
 
     /// Batch size for parallel processing in streaming/metagenomic mode
     #[arg(long, default_value_t = 1000)]
+    batch_size: usize,
+
     /// Enable fast k-mer heuristic pre-filtering before running full HMM DP (5-10x faster)
     #[arg(long, default_value_t = true)]
     kmer_filter: bool,
@@ -179,6 +181,7 @@ impl TALEFinder {
             name: id.to_string(),
             acc: String::new(),
             desc: String::new(),
+            taxid: -1,
             dsq,
             n: l_val,
             l: l_val,

@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.102"
 bio = "3.0.0"
-hmmer-pure-rs = { git = "https://github.com/henriksson-lab/hmmer-pure-rs", version = "0.6.0" }
+hmmer-pure-rs = "0.7.4"
 rayon = "1.10.0"
 clap = { version = "4.6.1", features = ["derive"] }
 strsim = "0.11.1"
