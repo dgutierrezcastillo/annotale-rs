@@ -22,6 +22,8 @@ Predicts and maps TALEs in whole-genome, metagenomic, or sequencing datasets sup
   * `-m, --metagenome`: Enable metagenomic/streaming mode: processes reads/contigs in parallel batches and suppresses non-matching empty logs.
   * `--min-length <INT>`: Minimum read/contig length in bp to scan (default: `200`).
   * `--batch-size <INT>`: Batch size for streaming parallel processing (default: `1000`).
+  * `--kmer-filter <BOOL>`: Enable fast k-mer heuristic pre-filtering before running full HMM profile DP (default: `true`, 5–10x faster).
+  * `--min-kmers <INT>`: Minimum number of matching 10-mers required to trigger full HMM profile evaluation (default: `2`).
   * `-t, --threshold <FLOAT>`: Score bit threshold (defaults to `10.0`).
 
 ### 2. Systematic Dictionary Renaming (`rename`)

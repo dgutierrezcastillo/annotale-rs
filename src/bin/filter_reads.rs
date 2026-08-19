@@ -10,10 +10,10 @@ use hmmer_pure_rs::profile::{profile_config, P7_LOCAL};
 use hmmer_pure_rs::sequence::Sequence as HmmSequence;
 use hmmer_pure_rs::{Hmm, OProfile, Pipeline, Profile, TopHits};
 use rayon::prelude::*;
-use rust_annotale::{open_sequence_reader, SeqRecord};
+use rust_annotale::{extract_consensus, open_sequence_reader, SeqRecord};
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
 
@@ -204,41 +204,6 @@ impl HmmScorer {
     }
 }
 
-fn extract_consensus(hmm_path: &Path) -> Result<String> {
-    let file = File::open(hmm_path)?;
-    let reader = BufReader::new(file);
-    let mut consensus = String::new();
-    let mut in_hmm = false;
-
-    for line_result in reader.lines() {
-        let line = line_result?;
-        if line.starts_with("HMM ") {
-            in_hmm = true;
-            continue;
-        }
-        if !in_hmm {
-            continue;
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-        if tokens.is_empty() {
-            continue;
-        }
-
-        if let Ok(_state_idx) = tokens[0].parse::<usize>() {
-            if tokens.len() > 6 {
-                consensus.push_str(tokens[6]);
-            }
-        }
-    }
-
-    Ok(consensus)
-}
 
 fn open_writer(path: &Path) -> Result<BufWriter<Box<dyn Write>>> {
     let file = File::create(path).with_context(|| format!("Failed to create {}", path.display()))?;

@@ -151,3 +151,55 @@ pub fn open_sequence_reader<P: AsRef<Path>>(path: P) -> Result<SeqReader<BufRead
     };
     Ok(SeqReader::new(BufReader::new(reader)))
 }
+
+/// Extract consensus nucleotide sequence from an HMM profile file
+pub fn extract_consensus<P: AsRef<Path>>(hmm_path: P) -> Result<String> {
+    let file = File::open(hmm_path.as_ref())?;
+    let reader = BufReader::new(file);
+    let mut consensus = String::new();
+    let mut in_hmm = false;
+
+    for line_result in reader.lines() {
+        let line = line_result?;
+        if line.starts_with("HMM ") {
+            in_hmm = true;
+            continue;
+        }
+        if !in_hmm {
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        if tokens.is_empty() {
+            continue;
+        }
+
+        if let Ok(_state_idx) = tokens[0].parse::<usize>() {
+            if tokens.len() > 6 {
+                consensus.push_str(tokens[6]);
+            }
+        }
+    }
+
+    Ok(consensus)
+}
+
+/// Split consensus sequence into non-overlapping k-mer fragments for fast pre-filtering
+pub fn extract_kmers(consensus: &str, k: usize) -> Vec<Vec<u8>> {
+    let mut kmers = Vec::new();
+    if k == 0 || consensus.len() < k {
+        return kmers;
+    }
+    let upper = consensus.to_ascii_uppercase();
+    let bytes = upper.as_bytes();
+    for chunk in bytes.chunks_exact(k) {
+        kmers.push(chunk.to_vec());
+    }
+    kmers
+}
+
