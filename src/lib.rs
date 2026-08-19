@@ -1,5 +1,7 @@
 pub mod models;
 pub mod translation;
 
-pub use models::TALERegion;
-pub use translation::Translator;
+pub use models::{open_sequence_reader, SeqRecord, SeqReader, TALERegion};
+pub use translation::{
+    dna_to_rvds, is_dna, parse_rvd_sequence, translate, translate_codon, Translator,
+};

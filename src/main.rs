@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use bio::alphabets::dna::revcomp;
-use bio::io::fasta;
 use bio::seq_analysis::orf::{Finder, Orf};
 use clap::Parser;
 use hmmer_pure_rs::alphabet::{Alphabet, AlphabetType};
@@ -10,7 +9,7 @@ use hmmer_pure_rs::profile::{profile_config, P7_LOCAL};
 use hmmer_pure_rs::sequence::Sequence as HmmSequence;
 use hmmer_pure_rs::{Hmm, OProfile, Pipeline, Profile, TopHits};
 use rayon::prelude::*;
-use rust_annotale::{TALERegion, Translator};
+use rust_annotale::{open_sequence_reader, SeqRecord, TALERegion, Translator};
 use std::path::Path;
 
 const CLUSTER_MAX_GAP_BP: usize = 500;
@@ -22,14 +21,27 @@ const RVD_AA_OFFSET_BP: usize = 36;
 #[derive(Parser, Debug)]
 #[command(author, version, about = "A Rust implementation of AnnoTALE")]
 struct Args {
-    #[arg(short, long)]
-    fasta: String,
+    /// Input sequence file: FASTA or FASTQ (.gz supported)
+    #[arg(short, long, alias = "fasta")]
+    input: String,
 
     #[arg(long)]
     hmm_dir: String,
 
-    #[arg(short, long, default_value_t = 100.0)]
+    #[arg(short, long, default_value_t = 10.0)]
     threshold: f32,
+
+    /// Metagenomic mode: streams large multi-contig/read files in batches, suppresses empty logs, and skips very short fragments
+    #[arg(short = 'm', long = "metagenome")]
+    metagenome: bool,
+
+    /// Minimum contig/read length in bp to scan (default: 200 bp)
+    #[arg(long, default_value_t = 200)]
+    min_length: usize,
+
+    /// Batch size for parallel processing in streaming/metagenomic mode
+    #[arg(long, default_value_t = 1000)]
+    batch_size: usize,
 }
 
 struct TALEFinder {
@@ -248,35 +260,70 @@ fn main() -> Result<()> {
     println!("Initializing TALEFinder with HMMs from {}...", args.hmm_dir);
     let finder = TALEFinder::new(&args.hmm_dir)?;
 
-    let reader = fasta::Reader::from_file(&args.fasta)?;
-    println!("Scanning {} for TALE effectors...", args.fasta);
+    println!(
+        "Scanning {} for TALE effectors{}...",
+        args.input,
+        if args.metagenome { " (metagenomic mode)" } else { "" }
+    );
 
-    let mut records = Vec::new();
-    for result in reader.records() {
-        records.push(result?);
+    let mut reader = open_sequence_reader(&args.input)?;
+    let mut total_scanned = 0;
+    let mut total_tales = 0;
+    let mut batch = Vec::with_capacity(args.batch_size);
+
+    while let Some(record) = reader.next_record()? {
+        if record.seq.len() < args.min_length {
+            continue;
+        }
+        batch.push(record);
+
+        if batch.len() >= args.batch_size {
+            total_scanned += batch.len();
+            total_tales += process_batch(&batch, &finder, args.metagenome);
+            batch.clear();
+        }
     }
 
-    records.par_iter().for_each(|record| {
-        let id = record.id();
-        let seq = record.seq();
+    if !batch.is_empty() {
+        total_scanned += batch.len();
+        total_tales += process_batch(&batch, &finder, args.metagenome);
+    }
 
-        println!("Processing sequence: {} (length: {})", id, seq.len());
-        let mut matches = finder.scan_sequence(id, seq);
-
-        if !matches.is_empty() {
-            println!(
-                "\nFound {} potential TALE effectors in {}",
-                matches.len(),
-                id
-            );
-            matches.sort_by_key(|m| m.start);
-            print_table(&matches);
-        } else {
-            println!("No TALE effectors found in {}", id);
-        }
-    });
+    println!(
+        "\nScan complete: {} contigs/sequences scanned, {} TALE effectors found.",
+        total_scanned, total_tales
+    );
 
     Ok(())
+}
+
+fn process_batch(
+    batch: &[SeqRecord],
+    finder: &TALEFinder,
+    metagenome: bool,
+) -> usize {
+    let results: Vec<(String, Vec<TALERegion>)> = batch
+        .par_iter()
+        .map(|record| {
+            let id = &record.id;
+            let seq = &record.seq;
+            let mut matches = finder.scan_sequence(id, seq);
+            matches.sort_by_key(|m| m.start);
+            (id.clone(), matches)
+        })
+        .collect();
+
+    let mut tales_found = 0;
+    for (id, matches) in results {
+        if !matches.is_empty() {
+            tales_found += matches.len();
+            println!("\nFound {} potential TALE effectors in {}", matches.len(), id);
+            print_table(&matches);
+        } else if !metagenome {
+            println!("No TALE effectors found in {}", id);
+        }
+    }
+    tales_found
 }
 
 fn print_table(matches: &[TALERegion]) {

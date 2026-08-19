@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use bio::io::fasta;
 use clap::Parser;
 use rayon::prelude::*;
+use rust_annotale::translate;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -16,39 +17,6 @@ struct Args {
     /// The output directory
     #[arg(long = "outdir", default_value = ".")]
     outdir: PathBuf,
-}
-
-// Reuse translation for repdiff
-fn translate(dna: &[u8]) -> Vec<u8> {
-    let mut aa = Vec::new();
-    for chunk in dna.chunks_exact(3) {
-        let a = match chunk {
-            b"GCT" | b"GCC" | b"GCA" | b"GCG" => b'A',
-            b"TGT" | b"TGC" => b'C',
-            b"GAT" | b"GAC" => b'D',
-            b"GAA" | b"GAG" => b'E',
-            b"TTT" | b"TTC" => b'F',
-            b"GGT" | b"GGC" | b"GGA" | b"GGG" => b'G',
-            b"CAT" | b"CAC" => b'H',
-            b"ATT" | b"ATC" | b"ATA" => b'I',
-            b"AAA" | b"AAG" => b'K',
-            b"TTA" | b"TTG" | b"CTT" | b"CTC" | b"CTA" | b"CTG" => b'L',
-            b"ATG" => b'M',
-            b"AAT" | b"AAC" => b'N',
-            b"CCT" | b"CCC" | b"CCA" | b"CCG" => b'P',
-            b"CAA" | b"CAG" => b'Q',
-            b"CGT" | b"CGC" | b"CGA" | b"CGG" | b"AGA" | b"AGG" => b'R',
-            b"TCT" | b"TCC" | b"TCA" | b"TCG" | b"AGT" | b"AGC" => b'S',
-            b"ACT" | b"ACC" | b"ACA" | b"ACG" => b'T',
-            b"GTT" | b"GTC" | b"GTA" | b"GTG" => b'V',
-            b"TGG" => b'W',
-            b"TAT" | b"TAC" => b'Y',
-            b"TAA" | b"TAG" | b"TGA" => b'*',
-            _ => b'X',
-        };
-        aa.push(a);
-    }
-    aa
 }
 
 fn extract_repeats_aa(sequence: &[u8]) -> Vec<Vec<u8>> {

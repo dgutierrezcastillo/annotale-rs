@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
+use bio::alphabets::dna::revcomp;
 use clap::{Parser, ValueEnum};
-use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use hmmer_pure_rs::alphabet::{Alphabet, AlphabetType};
@@ -8,13 +8,13 @@ use hmmer_pure_rs::bg::Bg;
 use hmmer_pure_rs::hmmfile;
 use hmmer_pure_rs::profile::{profile_config, P7_LOCAL};
 use hmmer_pure_rs::sequence::Sequence as HmmSequence;
-use hmmer_pure_rs::{Hmm, Pipeline, Profile, TopHits, OProfile};
+use hmmer_pure_rs::{Hmm, OProfile, Pipeline, Profile, TopHits};
 use rayon::prelude::*;
+use rust_annotale::{open_sequence_reader, SeqRecord};
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
-use bio::alphabets::dna::revcomp;
 use std::time::Instant;
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,155 +89,6 @@ struct Args {
         help = "Batch size for streaming reads"
     )]
     batch_size: usize,
-}
-
-#[derive(Clone)]
-struct SeqRecord {
-    id: String,
-    seq: Vec<u8>,
-    qual: Option<Vec<u8>>,
-}
-
-enum Format {
-    Fasta,
-    Fastq,
-    Unknown,
-}
-
-struct SeqReader<R: BufRead> {
-    reader: R,
-    format: Format,
-    buffer: String,
-}
-
-impl<R: BufRead> SeqReader<R> {
-    fn new(reader: R) -> Self {
-        Self {
-            reader,
-            format: Format::Unknown,
-            buffer: String::new(),
-        }
-    }
-
-    fn next_record(&mut self) -> Result<Option<SeqRecord>> {
-        if let Format::Unknown = self.format {
-            let buf = self.reader.fill_buf()?;
-            if buf.is_empty() {
-                return Ok(None);
-            }
-            if buf[0] == b'>' {
-                self.format = Format::Fasta;
-            } else if buf[0] == b'@' {
-                self.format = Format::Fastq;
-            } else {
-                return Err(anyhow::anyhow!(
-                    "Invalid sequence file format. First character must be '>' or '@', got '{}'",
-                    buf[0] as char
-                ));
-            }
-        }
-
-        match self.format {
-            Format::Fasta => {
-                let mut header = String::new();
-                if !self.buffer.is_empty() {
-                    header = self.buffer.clone();
-                    self.buffer.clear();
-                } else {
-                    let bytes_read = self.reader.read_line(&mut header)?;
-                    if bytes_read == 0 {
-                        return Ok(None);
-                    }
-                }
-
-                let trimmed_header = header.trim();
-                if !trimmed_header.starts_with('>') {
-                    return Err(anyhow::anyhow!(
-                        "FASTA record header must start with '>', got: {}",
-                        trimmed_header
-                    ));
-                }
-                let id = trimmed_header[1..].to_string();
-
-                let mut seq_bytes = Vec::new();
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    let bytes = self.reader.read_line(&mut line)?;
-                    if bytes == 0 {
-                        break;
-                    }
-                    if line.starts_with('>') {
-                        self.buffer = line.clone();
-                        break;
-                    }
-                    let trimmed = line.trim();
-                    seq_bytes.extend_from_slice(trimmed.as_bytes());
-                }
-
-                Ok(Some(SeqRecord {
-                    id,
-                    seq: seq_bytes,
-                    qual: None,
-                }))
-            }
-            Format::Fastq => {
-                let mut header = String::new();
-                let bytes_read = self.reader.read_line(&mut header)?;
-                if bytes_read == 0 {
-                    return Ok(None);
-                }
-                let trimmed_header = header.trim();
-                if !trimmed_header.starts_with('@') {
-                    return Err(anyhow::anyhow!(
-                        "FASTQ record header must start with '@', got: {}",
-                        trimmed_header
-                    ));
-                }
-                let id = trimmed_header[1..].to_string();
-
-                let mut seq_line = String::new();
-                if self.reader.read_line(&mut seq_line)? == 0 {
-                    return Err(anyhow::anyhow!(
-                        "Truncated FASTQ record: missing sequence for {}",
-                        id
-                    ));
-                }
-                let seq = seq_line.trim().as_bytes().to_vec();
-
-                let mut plus_line = String::new();
-                if self.reader.read_line(&mut plus_line)? == 0 {
-                    return Err(anyhow::anyhow!(
-                        "Truncated FASTQ record: missing '+' line for {}",
-                        id
-                    ));
-                }
-
-                let mut qual_line = String::new();
-                if self.reader.read_line(&mut qual_line)? == 0 {
-                    return Err(anyhow::anyhow!(
-                        "Truncated FASTQ record: missing quality scores for {}",
-                        id
-                    ));
-                }
-                let qual = qual_line.trim().as_bytes().to_vec();
-
-                if seq.len() != qual.len() {
-                    return Err(anyhow::anyhow!(
-                        "FASTQ record error: sequence and quality score lengths differ for {}",
-                        id
-                    ));
-                }
-
-                Ok(Some(SeqRecord {
-                    id,
-                    seq,
-                    qual: Some(qual),
-                }))
-            }
-            Format::Unknown => unreachable!(),
-        }
-    }
 }
 
 struct SeqWriter<W: Write> {
@@ -389,16 +240,6 @@ fn extract_consensus(hmm_path: &Path) -> Result<String> {
     Ok(consensus)
 }
 
-fn open_reader(path: &Path) -> Result<BufReader<Box<dyn Read>>> {
-    let file = File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
-    let reader: Box<dyn Read> = if path.extension().map_or(false, |ext| ext == "gz") {
-        Box::new(GzDecoder::new(file))
-    } else {
-        Box::new(file)
-    };
-    Ok(BufReader::new(reader))
-}
-
 fn open_writer(path: &Path) -> Result<BufWriter<Box<dyn Write>>> {
     let file = File::create(path).with_context(|| format!("Failed to create {}", path.display()))?;
     let writer: Box<dyn Write> = if path.extension().map_or(false, |ext| ext == "gz") {
@@ -528,8 +369,7 @@ fn main() -> Result<()> {
     }
 
     println!("Opening input file: {}...", args.input);
-    let input_buf = open_reader(Path::new(&args.input))?;
-    let mut reader = SeqReader::new(input_buf);
+    let mut reader = open_sequence_reader(&args.input)?;
 
     println!("Opening output files:\n  Repeats: {}\n  No-repeats: {}", args.output_repeats, args.output_norepeats);
     let mut writer_repeats = SeqWriter::new(open_writer(Path::new(&args.output_repeats))?);

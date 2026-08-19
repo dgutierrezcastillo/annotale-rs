@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use bio::io::fasta;
 use clap::Parser;
+use rust_annotale::{dna_to_rvds, is_dna, parse_rvd_sequence};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -15,98 +16,6 @@ struct Args {
     /// Output file path (optional, writes to stdout if not provided)
     #[arg(short = 'o', long = "output")]
     output: Option<PathBuf>,
-}
-
-// Minimal translation map for TALE repeats
-fn translate(dna: &[u8]) -> Vec<u8> {
-    let mut aa = Vec::new();
-    for chunk in dna.chunks_exact(3) {
-        let a = match chunk {
-            b"GCT" | b"GCC" | b"GCA" | b"GCG" => b'A',
-            b"TGT" | b"TGC" => b'C',
-            b"GAT" | b"GAC" => b'D',
-            b"GAA" | b"GAG" => b'E',
-            b"TTT" | b"TTC" => b'F',
-            b"GGT" | b"GGC" | b"GGA" | b"GGG" => b'G',
-            b"CAT" | b"CAC" => b'H',
-            b"ATT" | b"ATC" | b"ATA" => b'I',
-            b"AAA" | b"AAG" => b'K',
-            b"TTA" | b"TTG" | b"CTT" | b"CTC" | b"CTA" | b"CTG" => b'L',
-            b"ATG" => b'M',
-            b"AAT" | b"AAC" => b'N',
-            b"CCT" | b"CCC" | b"CCA" | b"CCG" => b'P',
-            b"CAA" | b"CAG" => b'Q',
-            b"CGT" | b"CGC" | b"CGA" | b"CGG" | b"AGA" | b"AGG" => b'R',
-            b"TCT" | b"TCC" | b"TCA" | b"TCG" | b"AGT" | b"AGC" => b'S',
-            b"ACT" | b"ACC" | b"ACA" | b"ACG" => b'T',
-            b"GTT" | b"GTC" | b"GTA" | b"GTG" => b'V',
-            b"TGG" => b'W',
-            b"TAT" | b"TAC" => b'Y',
-            b"TAA" | b"TAG" | b"TGA" => b'*',
-            _ => b'X',
-        };
-        aa.push(a);
-    }
-    aa
-}
-
-fn dna_to_rvds(seq: &[u8]) -> Vec<String> {
-    let mut rvds = Vec::new();
-    let aa_seq = translate(seq);
-    let mut start_idx = None;
-    for i in 0..aa_seq.len().saturating_sub(3) {
-        if aa_seq[i] == b'L' && aa_seq[i+1] == b'T' && aa_seq[i+2] == b'P' {
-            start_idx = Some(i);
-            break;
-        }
-    }
-    if let Some(start) = start_idx {
-        let mut curr = start * 3;
-        while curr + 102 <= seq.len() {
-            let repeat_dna = &seq[curr..curr+102];
-            let repeat_aa = translate(repeat_dna);
-            if repeat_aa.len() >= 14 {
-                let rvd = format!("{}{}", repeat_aa[12] as char, repeat_aa[13] as char);
-                rvds.push(rvd);
-            }
-            curr += 102;
-        }
-    }
-    rvds
-}
-
-fn is_dna(seq: &[u8]) -> bool {
-    if seq.contains(&b'-') || seq.contains(&b',') {
-        return false;
-    }
-    seq.iter().all(|&b| match b.to_ascii_uppercase() {
-        b'A' | b'C' | b'G' | b'T' | b'N' | b'U' => true,
-        _ => false,
-    })
-}
-
-fn parse_rvd_sequence(seq_str: &str) -> Vec<String> {
-    let cleaned: String = seq_str.chars().filter(|c| !c.is_whitespace()).collect();
-    if cleaned.contains('-') {
-        cleaned.split('-').map(|s| s.to_string()).collect()
-    } else if cleaned.contains(',') {
-        cleaned.split(',').map(|s| s.to_string()).collect()
-    } else {
-        // Chunk into pairs of 2 characters
-        let chars: Vec<char> = cleaned.chars().collect();
-        let mut rvds = Vec::new();
-        let mut i = 0;
-        while i < chars.len() {
-            if i + 1 < chars.len() {
-                rvds.push(format!("{}{}", chars[i], chars[i+1]));
-                i += 2;
-            } else {
-                rvds.push(chars[i].to_string());
-                i += 1;
-            }
-        }
-        rvds
-    }
 }
 
 fn main() -> Result<()> {

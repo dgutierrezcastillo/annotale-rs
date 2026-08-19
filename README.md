@@ -11,16 +11,18 @@ By leveraging Rust's safety guarantees and data-parallelism via `rayon`, `rust_a
 The suite consists of the following components:
 
 ### 1. Main TALE Predictor / Scanner (`rust_annotale`)
-Predicts and maps TALEs in whole-genome FastA files using profile Hidden Markov Models (HMMs).
+Predicts and maps TALEs in whole-genome, metagenomic, or sequencing datasets supporting FASTA and FASTQ format (both raw and `.gz` compressed) using profile Hidden Markov Models (HMMs).
 * **Usage**:
   ```bash
-  cargo run --release -- --fasta <path_to_genome> --hmm-dir <path_to_hmm_directory> [options]
+  cargo run --release -- --input <path_to_genome_metagenome_or_reads> --hmm-dir <path_to_hmm_directory> [options]
   ```
 * **Arguments**:
-  * `-f, --fasta <FILE>`: Path to the input genome in FastA format.
-  * `-h, --hmm-dir <DIR>`: Path to the directory containing AnnoTALE HMM profiles.
-  * `-o, --outdir <DIR>`: Directory to write output files (defaults to `./annotale_out`).
-  * `-s, --sensitive`: Perform a sensitive scan.
+  * `-i, --input <FILE>`: Path to the input FASTA/FASTQ sequence file (plain or `.gz` compressed). (Alias: `--fasta`).
+  * `-h, --hmm-dir <DIR>`: Path to the directory containing AnnoTALE HMM profiles (`starts.hmm`, `repeats.hmm`, `ends.hmm`).
+  * `-m, --metagenome`: Enable metagenomic/streaming mode: processes reads/contigs in parallel batches and suppresses non-matching empty logs.
+  * `--min-length <INT>`: Minimum read/contig length in bp to scan (default: `200`).
+  * `--batch-size <INT>`: Batch size for streaming parallel processing (default: `1000`).
+  * `-t, --threshold <FLOAT>`: Score bit threshold (defaults to `10.0`).
 
 ### 2. Systematic Dictionary Renaming (`rename`)
 Streamlines GFF3/Genbank files by replacing preliminary TALE identifiers with their systematic nomenclature assignments using a mapping dictionary.
