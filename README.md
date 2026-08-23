@@ -12,43 +12,47 @@ The suite consists of the following components:
 
 ### 1. Main TALE Predictor / Scanner (`annotale-rs`)
 Predicts and maps TALEs in whole-genome, metagenomic, or sequencing datasets supporting FASTA and FASTQ format (both raw and `.gz` compressed) using profile Hidden Markov Models (HMMs).
+
+The prediction pipeline ports the Java AnnoTALE algorithm: a rolling consensus k-mer prefilter selects candidate windows, which are scored against `repeats.hmm`, picked as peaks, clustered, boundary-refined against `starts.hmm`/`ends.hmm`, and resolved to ORFs. RVDs are extracted per-repeat from HMM-aligned blocks (frame-locked and anchor-checked), not by fixed-stride walking.
+
 * **Usage**:
   ```bash
   cargo run --release -- --input <path_to_genome_metagenome_or_reads> --hmm-dir <path_to_hmm_directory> [options]
   ```
 * **Arguments**:
   * `-i, --input <FILE>`: Path to the input FASTA/FASTQ sequence file (plain or `.gz` compressed). (Alias: `--fasta`).
-  * `-h, --hmm-dir <DIR>`: Path to the directory containing AnnoTALE HMM profiles (`starts.hmm`, `repeats.hmm`, `ends.hmm`).
+  * `--hmm-dir <DIR>`: Path to the directory containing AnnoTALE HMM profiles (`starts.hmm`, `repeats.hmm`, `ends.hmm`). `starts.hmm`/`ends.hmm` are optional; without them terminus boundary refinement is skipped.
+  * `-O, --output <FILE>`: Write predictions as one-row-per-TALE TSV (`contig`, `strand`, `start`, `end`, `score`, `pseudo`, `rvds`) instead of human-readable stdout tables.
   * `-m, --metagenome`: Enable metagenomic/streaming mode: processes reads/contigs in parallel batches and suppresses non-matching empty logs.
   * `--min-length <INT>`: Minimum read/contig length in bp to scan (default: `200`).
   * `--batch-size <INT>`: Batch size for streaming parallel processing (default: `1000`).
-  * `--no-kmer-filter`: Disable fast k-mer heuristic pre-filtering (runs full HMM DP unconditionally).
-  * `--min-kmers <INT>`: Minimum number of matching 10-mers required to trigger full HMM profile evaluation (default: `2`).
-  * `-t, --threshold <FLOAT>`: Score bit threshold (defaults to `10.0`).
+  * `--no-kmer-filter`: Disable fast k-mer heuristic pre-filtering.
+  * `--min-kmers <INT>`: Minimum number of matching consensus fragments required to trigger full HMM evaluation of a read (default: `2`).
+  * `-t, --threshold <FLOAT>`: Peak bitscore cutoff override for calling repeat peaks; `0` uses the Java default (`consensus_len × ln(1.3)` ≈ 38.6 bits).
 
 ### 2. Systematic Dictionary Renaming (`rename`)
 Streamlines GFF3/Genbank files by replacing preliminary TALE identifiers with their systematic nomenclature assignments using a mapping dictionary.
 * **Usage**:
   ```bash
-  cargo run --release --bin rename -- -r <mapping_tsv> -i <input_gff3> -o <output_directory>
+  cargo run --release --bin rename -- -r <mapping_tsv> -i <input_gff3> --outdir <output_directory>
   ```
 * **Arguments**:
   * `-r, --registry <FILE>`: TSV dictionary map file containing nomenclature mapping.
   * `-i, --input <FILE>`: Input annotation file to process (GFF3 format).
-  * `-o, --outdir <DIR>`: Output directory where renamed annotations are stored.
+  * `--outdir <DIR>`: Output directory where renamed annotations are stored (defaults to `.`).
 
 ### 3. TALE Sequence Analyzer (`analyze`)
 Ingests TALE CDS DNA sequences, translates them to amino acids, automatically segments them into individual canonical 34–35 amino acid repeats using structural motif matching, and extracts their Repeat Variable Diresidues (RVDs).
 * **Usage**:
   ```bash
-  cargo run --release --bin analyze -- -t <tale_fasta> -o <output_directory>
+  cargo run --release --bin analyze -- -t <tale_fasta> --outdir <output_directory>
   ```
 
 ### 4. Repeat Sequence Pairwise Differences (`repdiff`)
 Computes massive pairwise Levenshtein distance matrices comparing all structural repeats of TALEs in the input. By parallelizing the $N \times M$ pairwise comparisons via `rayon`, this computation completes almost instantly.
 * **Usage**:
   ```bash
-  cargo run --release --bin repdiff -- -t <tale_fasta> -o <output_directory>
+  cargo run --release --bin repdiff -- -t <tale_fasta> --outdir <output_directory>
   ```
 
 ### 5. Long-Read Sequence Filter (`filter_reads`)
@@ -159,27 +163,37 @@ To build and compile all binaries in release mode:
 
 ---
 
-## Performance Benchmarking
+## Performance & Validation
 
-A comprehensive benchmark was conducted comparing the original Java AnnoTALE software against our optimized `annotale-rs` tool across a diverse suite of 6 representative *Xanthomonas* genomes (conducted on a 16-thread CPU):
+Benchmarks run sequentially on Apple Silicon (16 GB RAM), comparing against Java AnnoTALE 1.5 and the curated TALE annotations in AnnoTALE's `List_of_TALEs.tsv` (recall at ±1,200 bp tolerance). Full methodology, reproduction commands, and RVD-level validation against UniProt/literature references: [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
-### Execution Time & Speedup Comparison
+### Detailed comparison on *Xoo* PXO99ᴬ
 
-| Genome File | Genome Description | Java AnnoTALE Time | Rust `annotale-rs` Time | Speedup Factor |
-| :--- | :--- | :---: | :---: | :---: |
-| **`PX099A.fa`** | *X. oryzae* (High TALE density) | 9m 07.94s | **10.53s** | **52.0x** |
-| **`X11-5Agenome.fasta`** | *X. albilineans* (Low TALE density) | 24.88s | **7.86s** | **3.2x** |
-| **`XCCgenome.fasta`** | *X. campestris* (Low TALE density) | 29.44s | **9.30s** | **3.2x** |
-| **`Xcampestris.fasta`** | *X. campestris* (Low TALE density) | 25.17s | **10.26s** | **2.5x** |
-| ****`Xoc_BLS256.fasta`**** | *X. oryzae* (High TALE density) | 14m 43.47s | **8.63s** | **102.4x** |
-| **`Xoo_KACC_10331.fasta`** | *X. oryzae* (High TALE density) | 6m 44.80s | **8.92s** | **45.4x** |
+| Metric | Java AnnoTALE 1.5 | annotale-rs |
+| :--- | :---: | :---: |
+| Recall (19 curated TALEs) | 19/19 | **19/19** |
+| False positives | 0 | **0** |
+| Degenerate rows | 0 | **0** |
+| Wall time (sequential) | 82.7 s | **52.8 s** |
+| Peak RSS | 3.3 GB | **60.6 MB** |
 
-### Benchmark Visualization
+### Multi-genome validation sweep (3 *Xoo* + 3 *Xoc*)
 
-![Performance Comparison Plot](benchmark_comparison.png)
+| Genome | Strain | Truth TALEs | Recall | FP | Call count = Java? | Time | Peak RSS |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| AE013598 | *Xoo* KACC10331 | 13 | 13/13 | 0 | ✓ (13) | 38 s | 73 MB |
+| AP008229 | *Xoo* MAFF311018 | 17 | 17/17 | 0 | ✓ (17) | 52 s | 74 MB |
+| CP007166 | *Xoo* PXO86 | 18 | 18/18 | 0 | ✓ (18) | 50 s | 77 MB |
+| CP003057 | *Xoc* BLS256 | 26 | 26/26 | 2¹ | ✓ (28) | 74 s | 67 MB |
+| CP011957 | *Xoc* BXOR1 | 27 | 27/27 | 0 | ✓ (27) | 71 s | 78 MB |
+| CP011961 | *Xoc* RS105 | 24 | 24/24 | 0 | ✓ (24) | 63 s | 63 MB |
 
-### Key Takeaway
-The native Java implementation suffers from exponential search scaling on genomes with high TALE density (like `Xoc_BLS256` or `PX099A`), taking **nearly 15 minutes** to analyze a single genome. In contrast, `annotale-rs` maintains a flat, predictable **8–10 second runtime** across all strains due to highly parallelized, pure Rust HMM scanning and coordinate alignments—representing a **102.4x speedup** on complex biological datasets.
+¹ Both tools predict two additional TALE-like regions on BLS256 that are absent from the curated annotation list — call sets are identical between Rust and Java.
+
+### Key takeaways
+- Detection is at parity with Java across high- and low-TALE-density genomes of both pathovars: every curated TALE recovered, zero degenerate predictions, and per-genome call counts identical to Java.
+- Peak memory is ~60–80 MB regardless of genome — the scanner never runs chromosome-length dynamic programming, only ~112 bp windows.
+- RVD strings are extracted per repeat from HMM-aligned blocks with frame locking; on PXO99ᴬ they match reviewed references (UniProt PthXo1) exactly through the core array, fixing a one-residue shift present in both legacy implementations.
 
 ---
 
