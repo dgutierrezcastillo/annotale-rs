@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use bio::alphabets::dna::revcomp;
 use clap::{Parser, ValueEnum};
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -10,7 +9,7 @@ use hmmer_pure_rs::profile::{profile_config, P7_LOCAL};
 use hmmer_pure_rs::sequence::Sequence as HmmSequence;
 use hmmer_pure_rs::{Hmm, OProfile, Pipeline, Profile, TopHits};
 use rayon::prelude::*;
-use rust_annotale::{extract_consensus, open_sequence_reader, SeqRecord};
+use rust_annotale::{extract_consensus, open_sequence_reader, revcomp, SeqRecord};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;

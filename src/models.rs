@@ -189,6 +189,30 @@ pub fn extract_consensus<P: AsRef<Path>>(hmm_path: P) -> Result<String> {
     Ok(consensus)
 }
 
+/// Reverse complement of a DNA sequence (full IUPAC; unknown bytes -> N).
+pub fn revcomp(dna: &[u8]) -> Vec<u8> {
+    fn complement(b: u8) -> u8 {
+        match b.to_ascii_uppercase() {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'C' => b'G',
+            b'G' => b'C',
+            b'R' => b'Y',
+            b'Y' => b'R',
+            b'S' => b'S',
+            b'W' => b'W',
+            b'K' => b'M',
+            b'M' => b'K',
+            b'B' => b'V',
+            b'V' => b'B',
+            b'D' => b'H',
+            b'H' => b'D',
+            _ => b'N',
+        }
+    }
+    dna.iter().rev().map(|&b| complement(b)).collect()
+}
+
 /// Split consensus sequence into non-overlapping k-mer fragments for fast pre-filtering
 pub fn extract_kmers(consensus: &str, k: usize) -> Vec<Vec<u8>> {
     let mut kmers = Vec::new();

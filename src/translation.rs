@@ -40,19 +40,9 @@ pub fn translate(dna: &[u8]) -> Vec<u8> {
     aa
 }
 
-/// Zero-cost Translator wrapper
-#[derive(Default, Clone, Copy, Debug)]
-pub struct Translator;
-
-impl Translator {
-    pub fn new() -> Self {
-        Self
-    }
-
-    #[inline]
-    pub fn translate(&self, seq: &[u8]) -> Vec<u8> {
-        translate(seq)
-    }
+/// Index of the first LTP motif in an amino acid sequence, if any.
+pub fn find_first_ltp(aa: &[u8]) -> Option<usize> {
+    (0..aa.len().saturating_sub(2)).find(|&i| aa[i] == b'L' && aa[i + 1] == b'T' && aa[i + 2] == b'P')
 }
 
 /// Check if byte slice represents DNA
@@ -72,13 +62,7 @@ pub fn is_dna(seq: &[u8]) -> bool {
 pub fn dna_to_rvds(seq: &[u8]) -> Vec<String> {
     let mut rvds = Vec::new();
     let aa_seq = translate(seq);
-    let mut start_idx = None;
-    for i in 0..aa_seq.len().saturating_sub(3) {
-        if aa_seq[i] == b'L' && aa_seq[i + 1] == b'T' && aa_seq[i + 2] == b'P' {
-            start_idx = Some(i);
-            break;
-        }
-    }
+    let start_idx = find_first_ltp(&aa_seq);
     if let Some(start) = start_idx {
         let mut curr = start * 3;
         while curr + 102 <= seq.len() {

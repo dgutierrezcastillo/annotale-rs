@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
-use bio::io::fasta;
 use clap::Parser;
-use rust_annotale::{dna_to_rvds, is_dna, parse_rvd_sequence};
+use rust_annotale::{dna_to_rvds, is_dna, open_sequence_reader, parse_rvd_sequence};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -21,15 +20,14 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let reader = fasta::Reader::from_file(&args.input)
+    let mut reader = open_sequence_reader(&args.input)
         .with_context(|| format!("Failed to read input FASTA file {:?}", args.input))?;
 
     let mut tales: Vec<(String, Vec<String>)> = Vec::new();
 
-    for record in reader.records() {
-        let rec = record?;
-        let id = rec.id().to_string();
-        let seq = rec.seq();
+    while let Some(rec) = reader.next_record()? {
+        let id = rec.id.clone();
+        let seq = &rec.seq;
         if is_dna(seq) {
             let rvds = dna_to_rvds(seq);
             tales.push((id, rvds));

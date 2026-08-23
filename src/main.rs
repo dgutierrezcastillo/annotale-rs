@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use bio::alphabets::dna::revcomp;
+
 use clap::Parser;
 use hmmer_pure_rs::alphabet::{Alphabet, AlphabetType};
 use hmmer_pure_rs::bg::Bg;
@@ -8,7 +8,7 @@ use hmmer_pure_rs::profile::{profile_config, P7_LOCAL};
 use hmmer_pure_rs::sequence::Sequence as HmmSequence;
 use hmmer_pure_rs::{Hmm, OProfile, Pipeline, Profile, TopHits};
 use rayon::prelude::*;
-use rust_annotale::{open_sequence_reader, SeqRecord, TALERegion};
+use rust_annotale::{open_sequence_reader, revcomp, SeqRecord, TALERegion};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;

@@ -1,8 +1,7 @@
 use anyhow::Result;
-use bio::io::fasta;
 use clap::Parser;
 use rayon::prelude::*;
-use rust_annotale::{is_dna, translate};
+use rust_annotale::{find_first_ltp, is_dna, open_sequence_reader, translate};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -24,20 +23,11 @@ fn extract_repeats_aa(sequence: &[u8]) -> Vec<Vec<u8>> {
     // anything outside the DNA alphabet is treated as an amino-acid sequence.
     let aa_seq = if is_dna(sequence) { translate(sequence) } else { sequence.to_vec() };
 
-    let mut start_idx = None;
-    for i in 0..aa_seq.len().saturating_sub(3) {
-        if aa_seq[i] == b'L' && aa_seq[i+1] == b'T' && aa_seq[i+2] == b'P' {
-            start_idx = Some(i);
-            break;
-        }
-    }
-
     let mut repeats = Vec::new();
-    if let Some(start) = start_idx {
+    if let Some(start) = find_first_ltp(&aa_seq) {
         let mut curr = start;
         while curr + 34 <= aa_seq.len() {
-            let repeat_aa = &aa_seq[curr..curr+34];
-            repeats.push(repeat_aa.to_vec());
+            repeats.push(aa_seq[curr..curr + 34].to_vec());
             curr += 34;
         }
     }
@@ -65,13 +55,12 @@ fn main() -> Result<()> {
         std::fs::create_dir_all(&args.outdir)?;
     }
 
-    let reader = fasta::Reader::from_file(&args.tale_sequences)?;
+    let mut reader = open_sequence_reader(&args.tale_sequences)?;
     let mut tale_data = Vec::new();
 
-    for record in reader.records() {
-        let rec = record?;
-        let repeats = extract_repeats_aa(rec.seq());
-        tale_data.push((rec.id().to_string(), repeats));
+    while let Some(rec) = reader.next_record()? {
+        let repeats = extract_repeats_aa(&rec.seq);
+        tale_data.push((rec.id.clone(), repeats));
     }
 
     // Compute only the upper triangle (i < j) in parallel, then mirror it —
