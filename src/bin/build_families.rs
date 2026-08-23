@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
-use bio::io::fasta;
 use clap::Parser;
 use rayon::prelude::*;
-use rust_annotale::{dna_to_rvds, is_dna, parse_rvd_sequence};
+use rust_annotale::{dna_to_rvds, is_dna, open_sequence_reader, parse_rvd_sequence};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -36,9 +35,9 @@ fn rvd_mismatch_cost(rvd1: &str, rvd2: &str) -> f32 {
     let chars1: Vec<char> = rvd1.chars().collect();
     let chars2: Vec<char> = rvd2.chars().collect();
     
-    let c12_1 = chars1.get(0).copied().unwrap_or('-');
+    let c12_1 = chars1.first().copied().unwrap_or('-');
     let c13_1 = chars1.get(1).copied().unwrap_or('-');
-    let c12_2 = chars2.get(0).copied().unwrap_or('-');
+    let c12_2 = chars2.first().copied().unwrap_or('-');
     let c13_2 = chars2.get(1).copied().unwrap_or('-');
     
     let mut cost = 0.0;
@@ -51,7 +50,9 @@ fn rvd_mismatch_cost(rvd1: &str, rvd2: &str) -> f32 {
     cost
 }
 
-// Glocal dynamic programming alignment function
+// Glocal dynamic programming alignment function.
+// Index-based loops keep the DP recurrence readable; skip the iterator lint.
+#[allow(clippy::needless_range_loop)]
 fn glocal_distance(seq1: &[String], seq2: &[String]) -> f32 {
     if seq1.is_empty() && seq2.is_empty() {
         return 0.0;
@@ -79,14 +80,14 @@ fn glocal_distance(seq1: &[String], seq2: &[String]) -> f32 {
     for i in 1..=m {
         d[i][0] = 0.0;
     }
-    
+
     for i in 1..=m {
         for j in 1..=n {
             let cost = rvd_mismatch_cost(&seq_a[i - 1], &seq_b[j - 1]);
             let match_score = d[i - 1][j - 1] + cost;
             let gap_a = d[i - 1][j] + 5.0;
             let gap_b = d[i][j - 1] + 5.0;
-            
+
             let mut val = match_score;
             if gap_a < val { val = gap_a; }
             if gap_b < val { val = gap_b; }
@@ -113,18 +114,14 @@ fn glocal_distance(seq1: &[String], seq2: &[String]) -> f32 {
                 curr_j -= 1;
                 continue;
             }
-        }
-        if curr_i > 0 {
             if (d[curr_i][curr_j] - (d[curr_i - 1][curr_j] + 5.0)).abs() < 1e-4 {
                 curr_i -= 1;
                 continue;
             }
         }
-        if curr_j > 0 {
-            if (d[curr_i][curr_j] - (d[curr_i][curr_j - 1] + 5.0)).abs() < 1e-4 {
-                curr_j -= 1;
-                continue;
-            }
+        if (d[curr_i][curr_j] - (d[curr_i][curr_j - 1] + 5.0)).abs() < 1e-4 {
+            curr_j -= 1;
+            continue;
         }
         if curr_i > 0 && curr_j > 0 {
             curr_i -= 1;
@@ -150,47 +147,22 @@ fn glocal_distance(seq1: &[String], seq2: &[String]) -> f32 {
 
 // UPGMA Tree node representation
 enum Node {
-    Leaf {
-        id: usize,
-        _tale_name: String,
-        length: usize,
-    },
+    Leaf { id: usize, length: usize },
     Internal {
         left: Box<Node>,
         right: Box<Node>,
         merge_dist: f32,
         max_tale_len: usize,
-        members: Vec<usize>,
     },
 }
 
 impl Node {
-    fn members(&self) -> &[usize] {
-        match self {
-            Node::Leaf { id, .. } => std::slice::from_ref(id),
-            Node::Internal { members, .. } => members,
-        }
-    }
-    
     fn max_tale_len(&self) -> usize {
         match self {
             Node::Leaf { length, .. } => *length,
             Node::Internal { max_tale_len, .. } => *max_tale_len,
         }
     }
-}
-
-// Calculate the average linkage distance between two nodes
-fn cluster_distance(c1: &Node, c2: &Node, dist_matrix: &[Vec<f32>]) -> f32 {
-    let m1 = c1.members();
-    let m2 = c2.members();
-    let mut sum = 0.0;
-    for &u in m1 {
-        for &v in m2 {
-            sum += dist_matrix[u][v];
-        }
-    }
-    sum / (m1.len() * m2.len()) as f32
 }
 
 // Helper to recursively collect leaf IDs from a node
@@ -259,7 +231,9 @@ fn get_consensus(rvds_list: &[&Vec<String>]) -> String {
                 *counts.entry(rvd).or_insert(0) += 1;
             }
         }
-        if let Some((most_frequent, _)) = counts.into_iter().max_by_key(|&(_, count)| count) {
+        if let Some((most_frequent, _)) =
+            counts.into_iter().max_by_key(|(rvd, count)| (*count, *rvd))
+        {
             consensus.push(most_frequent.clone());
         }
     }
@@ -274,15 +248,14 @@ fn main() -> Result<()> {
             .with_context(|| format!("Failed to create output directory {:?}", args.outdir))?;
     }
 
-    let reader = fasta::Reader::from_file(&args.input)
+    let mut reader = open_sequence_reader(&args.input)
         .with_context(|| format!("Failed to read input FASTA file {:?}", args.input))?;
 
     let mut tales: Vec<(String, Vec<String>)> = Vec::new();
 
-    for record in reader.records() {
-        let rec = record?;
-        let id = rec.id().to_string();
-        let seq = rec.seq();
+    while let Some(rec) = reader.next_record()? {
+        let id = rec.id.clone();
+        let seq = &rec.seq;
         if is_dna(seq) {
             let rvds = dna_to_rvds(seq);
             tales.push((id, rvds));
@@ -344,59 +317,84 @@ fn main() -> Result<()> {
     }
 
     println!("Building UPGMA average-linkage hierarchical dendrogram...");
-    let mut active_clusters = Vec::new();
-    for (i, (id, rvds)) in tales.iter().enumerate() {
-        active_clusters.push(Node::Leaf {
-            id: i,
-            _tale_name: id.clone(),
-            length: rvds.len(),
-        });
+    let n_tales = tales.len();
+    let mut nodes: Vec<Option<Node>> = Vec::with_capacity(n_tales);
+    for (i, (_, rvds)) in tales.iter().enumerate() {
+        nodes.push(Some(Node::Leaf { id: i, length: rvds.len() }));
+    }
+    let mut sizes = vec![1usize; n_tales];
+
+    // Inter-cluster average distances, updated incrementally with the
+    // Lance-Williams formula D(new,k) = (|L|*D(L,k) + |R|*D(R,k)) / (|L|+|R|),
+    // which is mathematically identical to recomputing the member average but
+    // avoids rescanning the full cross-product at every merge.
+    let mut cd = vec![0.0f32; n_tales * n_tales];
+    for i in 0..n_tales {
+        for j in (i + 1)..n_tales {
+            cd[i * n_tales + j] = dist_matrix[i][j];
+            cd[j * n_tales + i] = dist_matrix[i][j];
+        }
     }
 
-    while active_clusters.len() > 1 {
+    let mut alive = vec![true; n_tales];
+    let mut remaining = n_tales;
+    while remaining > 1 {
         let mut min_dist = f32::INFINITY;
-        let mut merge_pair = (0, 0);
-
-        let n_active = active_clusters.len();
-        for i in 0..n_active {
-            for j in (i + 1)..n_active {
-                let dist = cluster_distance(&active_clusters[i], &active_clusters[j], &dist_matrix);
-                if dist < min_dist {
-                    min_dist = dist;
-                    merge_pair = (i, j);
+        let mut best = (usize::MAX, usize::MAX);
+        for i in 0..n_tales {
+            if !alive[i] {
+                continue;
+            }
+            for j in (i + 1)..n_tales {
+                if !alive[j] {
+                    continue;
+                }
+                let d = cd[i * n_tales + j];
+                if d < min_dist {
+                    min_dist = d;
+                    best = (i, j);
                 }
             }
         }
 
-        let (idx1, idx2) = merge_pair;
-        let right_node = active_clusters.remove(idx2);
-        let left_node = active_clusters.remove(idx1);
+        let (i, j) = best;
+        let left = nodes[i].take().expect("active cluster slot");
+        let right = nodes[j].take().expect("active cluster slot");
+        let (si, sj) = (sizes[i], sizes[j]);
+        for k in 0..n_tales {
+            if !alive[k] || k == i || k == j {
+                continue;
+            }
+            let nd =
+                (si as f32 * cd[i * n_tales + k] + sj as f32 * cd[j * n_tales + k]) / (si + sj) as f32;
+            cd[i * n_tales + k] = nd;
+            cd[k * n_tales + i] = nd;
+        }
 
-        let mut members = Vec::with_capacity(left_node.members().len() + right_node.members().len());
-        members.extend_from_slice(left_node.members());
-        members.extend_from_slice(right_node.members());
-
-        let max_tale_len = std::cmp::max(left_node.max_tale_len(), right_node.max_tale_len());
-
-        let parent = Node::Internal {
+        let max_tale_len = left.max_tale_len().max(right.max_tale_len());
+        nodes[i] = Some(Node::Internal {
+            left: Box::new(left),
+            right: Box::new(right),
             merge_dist: min_dist,
             max_tale_len,
-            members,
-            left: Box::new(left_node),
-            right: Box::new(right_node),
-        };
-
-        active_clusters.push(parent);
+        });
+        sizes[i] = si + sj;
+        alive[j] = false;
+        remaining -= 1;
     }
 
-    let root = active_clusters.remove(0);
+    let root_idx = alive
+        .iter()
+        .position(|&a| a)
+        .expect("at least one cluster remains");
+    let root = nodes[root_idx].take().expect("root cluster");
 
     println!("Traversing tree with cut threshold {} and normalized length mismatch splitting...", args.cut);
     let mut families = Vec::new();
     process_node(&root, args.cut, &mut families);
 
     // Sort families by member count in descending order
-    families.sort_by(|f1, f2| f2.len().cmp(&f1.len()));
+    families.sort_by_key(|family| std::cmp::Reverse(family.len()));
 
     println!("Formed {} homologous TALE families.", families.len());
 

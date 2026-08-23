@@ -144,7 +144,7 @@ impl<R: BufRead> SeqReader<R> {
 pub fn open_sequence_reader<P: AsRef<Path>>(path: P) -> Result<SeqReader<BufReader<Box<dyn Read>>>> {
     let p = path.as_ref();
     let file = File::open(p).with_context(|| format!("Failed to open {}", p.display()))?;
-    let reader: Box<dyn Read> = if p.extension().map_or(false, |ext| ext == "gz") {
+    let reader: Box<dyn Read> = if p.extension().is_some_and(|ext| ext == "gz") {
         Box::new(GzDecoder::new(file))
     } else {
         Box::new(file)
@@ -189,6 +189,30 @@ pub fn extract_consensus<P: AsRef<Path>>(hmm_path: P) -> Result<String> {
     Ok(consensus)
 }
 
+/// Reverse complement of a DNA sequence (full IUPAC; unknown bytes -> N).
+pub fn revcomp(dna: &[u8]) -> Vec<u8> {
+    fn complement(b: u8) -> u8 {
+        match b.to_ascii_uppercase() {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'C' => b'G',
+            b'G' => b'C',
+            b'R' => b'Y',
+            b'Y' => b'R',
+            b'S' => b'S',
+            b'W' => b'W',
+            b'K' => b'M',
+            b'M' => b'K',
+            b'B' => b'V',
+            b'V' => b'B',
+            b'D' => b'H',
+            b'H' => b'D',
+            _ => b'N',
+        }
+    }
+    dna.iter().rev().map(|&b| complement(b)).collect()
+}
+
 /// Split consensus sequence into non-overlapping k-mer fragments for fast pre-filtering
 pub fn extract_kmers(consensus: &str, k: usize) -> Vec<Vec<u8>> {
     let mut kmers = Vec::new();
@@ -201,5 +225,99 @@ pub fn extract_kmers(consensus: &str, k: usize) -> Vec<Vec<u8>> {
         kmers.push(chunk.to_vec());
     }
     kmers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fasta_reader_handles_multiline_and_lookahead_buffer() {
+        let input: &[u8] = b">rec1 some description\nACGT\nGTCA\n>rec2\nTTTT\n";
+        let mut reader = SeqReader::new(input);
+
+        let r1 = reader.next_record().unwrap().unwrap();
+        assert_eq!(r1.id, "rec1");
+        assert_eq!(r1.seq, b"ACGTGTCA");
+        assert!(r1.qual.is_none());
+
+        // Second record exercises the buffered-header path (line stored back
+        // when a '>' is hit mid-sequence).
+        let r2 = reader.next_record().unwrap().unwrap();
+        assert_eq!(r2.id, "rec2");
+        assert_eq!(r2.seq, b"TTTT");
+
+        assert!(reader.next_record().unwrap().is_none());
+        assert!(reader.next_record().unwrap().is_none()); // stays exhausted
+    }
+
+    #[test]
+    fn fastq_reader_roundtrip_four_line_records() {
+        let input: &[u8] = b"@read1\nACGT\n+\nIIII\n@read2\nGG\n+\nHH\n";
+        let mut reader = SeqReader::new(input);
+
+        let r1 = reader.next_record().unwrap().unwrap();
+        assert_eq!(r1.id, "read1");
+        assert_eq!(r1.seq, b"ACGT");
+        assert_eq!(r1.qual.unwrap(), b"IIII");
+
+        let r2 = reader.next_record().unwrap().unwrap();
+        assert_eq!(r2.id, "read2");
+        assert_eq!(r2.qual.unwrap(), b"HH");
+
+        assert!(reader.next_record().unwrap().is_none());
+    }
+
+    #[test]
+    fn fastq_truncation_is_reported_as_error() {
+        let cases: [&[u8]; 3] = [
+            b"@read1\n",            // missing seq
+            b"@read1\nACGT\n",      // missing '+'
+            b"@read1\nACGT\n+\n",   // missing qual
+        ];
+        for input in cases {
+            let mut reader = SeqReader::new(input);
+            assert!(reader.next_record().is_err(), "input {:?}", String::from_utf8_lossy(input));
+        }
+    }
+
+    #[test]
+    fn invalid_first_byte_is_rejected() {
+        let mut reader = SeqReader::new(&b"not-a-sequence-file\n"[..]);
+        let err = reader.next_record().unwrap_err().to_string();
+        assert!(err.contains("Invalid sequence format"), "{}", err);
+    }
+
+    #[test]
+    fn extract_kmers_splits_non_overlapping_uppercase() {
+        assert_eq!(
+            extract_kmers("abcdefghijKl", 5),
+            vec![b"ABCDE".to_vec(), b"FGHIJ".to_vec()]
+        );
+        // trailing remainder shorter than k is dropped
+        assert_eq!(extract_kmers("ABCDEFGH", 5), vec![b"ABCDE".to_vec()]);
+        assert!(extract_kmers("AC", 5).is_empty());
+        assert!(extract_kmers("ACGT", 0).is_empty());
+    }
+
+    #[test]
+    fn extract_consensus_reads_state_column_from_hmm_body() {
+        let hmm: &[u8] = b"# STOCKHOLM 1.0\n\
+                          NAME repeats\n\
+                          LENG 2\n\
+                          HMM A C G T\n\
+                          1 99 4 59 36 0 A 1 2 3\n\
+                          2 98 4 59 36 0 C 1 2 3\n\
+                          //\n";
+        let dir = std::env::temp_dir().join(format!("annotale-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("repeats.hmm");
+        std::fs::write(&path, hmm).unwrap();
+
+        let consensus = extract_consensus(&path).unwrap();
+        assert_eq!(consensus, "AC");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 

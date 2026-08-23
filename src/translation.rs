@@ -40,19 +40,9 @@ pub fn translate(dna: &[u8]) -> Vec<u8> {
     aa
 }
 
-/// Zero-cost Translator wrapper
-#[derive(Default, Clone, Copy, Debug)]
-pub struct Translator;
-
-impl Translator {
-    pub fn new() -> Self {
-        Self
-    }
-
-    #[inline]
-    pub fn translate(&self, seq: &[u8]) -> Vec<u8> {
-        translate(seq)
-    }
+/// Index of the first LTP motif in an amino acid sequence, if any.
+pub fn find_first_ltp(aa: &[u8]) -> Option<usize> {
+    (0..aa.len().saturating_sub(2)).find(|&i| aa[i] == b'L' && aa[i + 1] == b'T' && aa[i + 2] == b'P')
 }
 
 /// Check if byte slice represents DNA
@@ -60,30 +50,26 @@ pub fn is_dna(seq: &[u8]) -> bool {
     if seq.contains(&b'-') || seq.contains(&b',') {
         return false;
     }
-    seq.iter().all(|&b| match b.to_ascii_uppercase() {
-        b'A' | b'C' | b'G' | b'T' | b'N' | b'U' => true,
-        _ => false,
-    })
+    seq.iter()
+        .all(|&b| matches!(b.to_ascii_uppercase(), b'A' | b'C' | b'G' | b'T' | b'N' | b'U'))
 }
 
 /// Convert DNA sequence to RVD list
+///
+/// Anchors at the first LTP motif and walks a fixed 102-bp stride. The RVD
+/// is residues 12/13 of each repeat (1-based), i.e. anchor+11/anchor+12
+/// in 0-based indices relative to the L.
 pub fn dna_to_rvds(seq: &[u8]) -> Vec<String> {
     let mut rvds = Vec::new();
     let aa_seq = translate(seq);
-    let mut start_idx = None;
-    for i in 0..aa_seq.len().saturating_sub(3) {
-        if aa_seq[i] == b'L' && aa_seq[i + 1] == b'T' && aa_seq[i + 2] == b'P' {
-            start_idx = Some(i);
-            break;
-        }
-    }
+    let start_idx = find_first_ltp(&aa_seq);
     if let Some(start) = start_idx {
         let mut curr = start * 3;
         while curr + 102 <= seq.len() {
             let repeat_dna = &seq[curr..curr + 102];
             let repeat_aa = translate(repeat_dna);
-            if repeat_aa.len() >= 14 {
-                let rvd = format!("{}{}", repeat_aa[12] as char, repeat_aa[13] as char);
+            if repeat_aa.len() >= 13 {
+                let rvd = format!("{}{}", repeat_aa[11] as char, repeat_aa[12] as char);
                 rvds.push(rvd);
             }
             curr += 102;
@@ -113,5 +99,91 @@ pub fn parse_rvd_sequence(seq_str: &str) -> Vec<String> {
             }
         }
         rvds
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Golden standard genetic code table, codon bases ordered T, C, A, G
+    /// (index = b0*16 + b1*4 + b2). '*' marks a stop codon.
+    const GENETIC_CODE: &str =
+        "FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG";
+
+    #[test]
+    fn translate_codon_matches_standard_genetic_code() {
+        let bases = b"TCAG";
+        let mut idx = 0;
+        for &b0 in bases {
+            for &b1 in bases {
+                for &b2 in bases {
+                    let expected = GENETIC_CODE.as_bytes()[idx];
+                    assert_eq!(
+                        translate_codon(&[b0, b1, b2]),
+                        expected,
+                        "codon {}{}{}",
+                        b0 as char,
+                        b1 as char,
+                        b2 as char
+                    );
+                    idx += 1;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn translate_ignores_trailing_partial_codon_and_uppercases() {
+        assert_eq!(translate(b"ATGGCT"), b"MA");
+        assert_eq!(translate(b"atggct"), b"MA");
+        assert_eq!(translate(b"ATGGCTA"), b"MA"); // trailing base dropped
+        assert!(translate(b"").is_empty());
+    }
+
+    /// One TALE repeat: 34 aa (102 bp) with the RVD diresidue at aa positions
+    /// 12/13. Build three repeats encoding HD and expect ["HD", "HD", "HD"].
+    fn tale_repeat(rvd12: &[u8], rvd13: &[u8]) -> Vec<u8> {
+        let mut codons: Vec<&[u8]> = vec![b"CTG", b"ACG", b"CCG"]; // L T P
+        codons.resize(11, b"GCT"); // filler A at residues 4..=10
+        codons.push(rvd12); // residue 12
+        codons.push(rvd13); // residue 13
+        codons.resize(34, b"GCT"); // filler through residue 34
+        codons.concat()
+    }
+
+    #[test]
+    fn dna_to_rvds_extracts_diresidues_from_three_repeats() {
+        let mut seq = Vec::new();
+        for _ in 0..3 {
+            seq.extend(tale_repeat(b"CAT", b"GAT")); // H D
+        }
+        assert_eq!(seq.len(), 306);
+        assert_eq!(dna_to_rvds(&seq), vec!["HD", "HD", "HD"]);
+    }
+
+    #[test]
+    fn dna_to_rvds_returns_empty_without_ltp_motif() {
+        let seq = vec![b'A'; 306];
+        assert!(dna_to_rvds(&seq).is_empty());
+    }
+
+    #[test]
+    fn parse_rvd_sequence_handles_all_delimiters() {
+        assert_eq!(parse_rvd_sequence("NI-NG-NI"), vec!["NI", "NG", "NI"]);
+        assert_eq!(parse_rvd_sequence("NI,NG,NI"), vec!["NI", "NG", "NI"]);
+        assert_eq!(parse_rvd_sequence("NINGNI"), vec!["NI", "NG", "NI"]);
+        assert_eq!(parse_rvd_sequence(" NI NG "), vec!["NI", "NG"]);
+        assert_eq!(parse_rvd_sequence("NIG"), vec!["NI", "G"]); // odd trailing char
+        assert!(parse_rvd_sequence("").is_empty());
+    }
+
+    #[test]
+    fn is_dna_rejects_protein_and_gap_characters() {
+        assert!(is_dna(b"ACGTNacgtn"));
+        assert!(is_dna(b"")); // empty treated as DNA by contract
+        assert!(!is_dna(b"LTPQVVAIAS"));
+        assert!(!is_dna(b"AC-GT"));
+        assert!(!is_dna(b"AC,GT"));
     }
 }
