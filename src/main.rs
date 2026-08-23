@@ -150,7 +150,7 @@ struct TALEFinder {
     /// Java peak threshold: consensus_len * ln(1.3) nats, stored in bits.
     peak_threshold_bits: f32,
     /// Consensus 10-bp fragments used by the rolling window prefilter.
-    prefiler_parts: Vec<Vec<u8>>,
+    prefilter_parts: Vec<Vec<u8>>,
     kmer_fragments: Vec<Vec<u8>>,
     min_kmers: usize,
     use_kmer_filter: bool,
@@ -213,7 +213,7 @@ impl TALEFinder {
             consensus_len,
             window_len,
             peak_threshold_bits,
-            prefiler_parts: rust_annotale::extract_kmers(&consensus, PREFILTER_FRAG_BP),
+            prefilter_parts: rust_annotale::extract_kmers(&consensus, PREFILTER_FRAG_BP),
             kmer_fragments: rust_annotale::extract_kmers(&consensus, 10),
             min_kmers,
             use_kmer_filter,
@@ -265,7 +265,7 @@ impl TALEFinder {
             return Vec::new();
         }
         let n_windows = up.len() - w + 1;
-        let parts = &self.prefiler_parts;
+        let parts = &self.prefilter_parts;
         let n_parts = parts.len();
         if n_parts == 0 {
             return Vec::new();
