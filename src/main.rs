@@ -10,6 +10,8 @@ use hmmer_pure_rs::sequence::Sequence as HmmSequence;
 use hmmer_pure_rs::{Hmm, OProfile, Pipeline, Profile, TopHits};
 use rayon::prelude::*;
 use rust_annotale::{open_sequence_reader, SeqRecord, TALERegion, Translator};
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 const CLUSTER_MAX_GAP_BP: usize = 500;
@@ -30,6 +32,11 @@ struct Args {
 
     #[arg(short, long, default_value_t = 10.0)]
     threshold: f32,
+
+    /// Write results as a TSV table (contig, strand, start, end, score,
+    /// pseudo, RVDs) to this file instead of formatted tables on stdout
+    #[arg(short = 'O', long)]
+    output: Option<String>,
 
     /// Metagenomic mode: streams large multi-contig/read files in batches, suppresses empty logs, and skips very short fragments
     #[arg(short = 'm', long = "metagenome")]
@@ -60,10 +67,11 @@ struct TALEFinder {
     kmer_fragments: Vec<Vec<u8>>,
     min_kmers: usize,
     use_kmer_filter: bool,
+    min_domain_bitscore: f32,
 }
 
 impl TALEFinder {
-    fn new(hmm_dir: &str, use_kmer_filter: bool, min_kmers: usize) -> Result<Self> {
+    fn new(hmm_dir: &str, use_kmer_filter: bool, min_kmers: usize, min_domain_bitscore: f32) -> Result<Self> {
         let repeats_path = Path::new(hmm_dir).join("repeats.hmm");
         let repeats_hmms = hmmfile::read_hmm_file(&repeats_path)
             .with_context(|| format!("Failed to read {}", repeats_path.display()))?;
@@ -82,6 +90,7 @@ impl TALEFinder {
             kmer_fragments,
             min_kmers,
             use_kmer_filter,
+            min_domain_bitscore,
         })
     }
 
@@ -191,7 +200,7 @@ impl TALEFinder {
 
         for hit in &th.hits {
             for domain in &hit.dcl {
-                if domain.bitscore > 10.0 {
+                if domain.bitscore > self.min_domain_bitscore {
                     matches.push((domain.iali as usize, domain.jali as usize, domain.bitscore));
                 }
             }
@@ -266,9 +275,12 @@ impl TALEFinder {
     }
 }
 
+/// One raw HMM repeat match: (query start bp, query end bp, bitscore).
+type RawMatch = (usize, usize, f32);
+
 fn group_matches_into_clusters(
-    raw_matches: &[(usize, usize, f32)],
-) -> Vec<(Vec<(usize, usize, f32)>, f32)> {
+    raw_matches: &[RawMatch],
+) -> Vec<(Vec<RawMatch>, f32)> {
     let mut clusters = Vec::new();
     if raw_matches.is_empty() {
         return clusters;
@@ -298,7 +310,19 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     let use_kmer_filter = !args.no_kmer_filter;
-    let finder = TALEFinder::new(&args.hmm_dir, use_kmer_filter, args.min_kmers)?;
+    let finder =
+        TALEFinder::new(&args.hmm_dir, use_kmer_filter, args.min_kmers, args.threshold)?;
+
+    let mut tsv_writer = match &args.output {
+        Some(path) => {
+            let file = File::create(path)
+                .with_context(|| format!("Failed to create output file {}", path))?;
+            let mut writer = BufWriter::new(file);
+            writeln!(writer, "contig\tstrand\tstart\tend\tscore\tpseudo\trvds")?;
+            Some(writer)
+        }
+        None => None,
+    };
 
     println!(
         "Scanning {} for TALE effectors{} (k-mer filter: {})...",
@@ -320,14 +344,14 @@ fn main() -> Result<()> {
 
         if batch.len() >= args.batch_size {
             total_scanned += batch.len();
-            total_tales += process_batch(&batch, &finder, args.metagenome);
+            total_tales += process_batch(&batch, &finder, args.metagenome, tsv_writer.as_mut())?;
             batch.clear();
         }
     }
 
     if !batch.is_empty() {
         total_scanned += batch.len();
-        total_tales += process_batch(&batch, &finder, args.metagenome);
+        total_tales += process_batch(&batch, &finder, args.metagenome, tsv_writer.as_mut())?;
     }
 
     println!(
@@ -338,11 +362,16 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Results sink: `Some` writes machine-readable TSV rows, `None` prints
+/// human-readable tables to stdout.
+type TsvWriter<'a> = Option<&'a mut BufWriter<File>>;
+
 fn process_batch(
     batch: &[SeqRecord],
     finder: &TALEFinder,
     metagenome: bool,
-) -> usize {
+    tsv_out: TsvWriter<'_>,
+) -> Result<usize> {
     let results: Vec<(String, Vec<TALERegion>)> = batch
         .par_iter()
         .map(|record| {
@@ -355,16 +384,38 @@ fn process_batch(
         .collect();
 
     let mut tales_found = 0;
-    for (id, matches) in results {
-        if !matches.is_empty() {
-            tales_found += matches.len();
-            println!("\nFound {} potential TALE effectors in {}", matches.len(), id);
-            print_table(&matches);
-        } else if !metagenome {
-            println!("No TALE effectors found in {}", id);
+    match tsv_out {
+        Some(writer) => {
+            for (id, matches) in results {
+                for region in matches {
+                    tales_found += 1;
+                    writeln!(
+                        writer,
+                        "{}\t{}\t{}\t{}\t{:.1}\t{}\t{}",
+                        id,
+                        region.strand,
+                        region.start,
+                        region.end,
+                        region.score,
+                        region.is_pseudo,
+                        region.rvds
+                    )?;
+                }
+            }
+        }
+        None => {
+            for (id, matches) in results {
+                if !matches.is_empty() {
+                    tales_found += matches.len();
+                    println!("\nFound {} potential TALE effectors in {}", matches.len(), id);
+                    print_table(&matches);
+                } else if !metagenome {
+                    println!("No TALE effectors found in {}", id);
+                }
+            }
         }
     }
-    tales_found
+    Ok(tales_found)
 }
 
 fn print_table(matches: &[TALERegion]) {

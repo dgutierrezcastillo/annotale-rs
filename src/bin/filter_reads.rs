@@ -11,7 +11,6 @@ use hmmer_pure_rs::sequence::Sequence as HmmSequence;
 use hmmer_pure_rs::{Hmm, OProfile, Pipeline, Profile, TopHits};
 use rayon::prelude::*;
 use rust_annotale::{extract_consensus, open_sequence_reader, SeqRecord};
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -209,7 +208,7 @@ impl HmmScorer {
 
 fn open_writer(path: &Path) -> Result<BufWriter<Box<dyn Write>>> {
     let file = File::create(path).with_context(|| format!("Failed to create {}", path.display()))?;
-    let writer: Box<dyn Write> = if path.extension().map_or(false, |ext| ext == "gz") {
+    let writer: Box<dyn Write> = if path.extension().is_some_and(|ext| ext == "gz") {
         Box::new(GzEncoder::new(file, Compression::default()))
     } else {
         Box::new(file)
@@ -217,15 +216,27 @@ fn open_writer(path: &Path) -> Result<BufWriter<Box<dyn Write>>> {
     Ok(BufWriter::new(writer))
 }
 
+/// True when `haystack` contains `needle` as a contiguous substring (byte-exact).
+fn contains_fragment(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+fn is_known_fragment(parts: &[Vec<u8>], fragment: &[u8]) -> bool {
+    parts.iter().any(|p| p.as_slice() == fragment)
+}
+
 fn find_repeats_heuristic(
     seq: &[u8],
     scorer: &HmmScorer,
-    parts: &HashSet<String>,
+    parts: &[Vec<u8>],
     frag: usize,
     consensus_len: usize,
     min_parts: usize,
     threshold_bits: f32,
 ) -> bool {
+    // Normalize once per call instead of allocating uppercased Strings on
+    // every window slide.
+    let seq = seq.to_ascii_uppercase();
     let num_lay = (consensus_len as f64 * 1.1).round() as usize;
     let w = num_lay;
 
@@ -241,9 +252,8 @@ fn find_repeats_heuristic(
 
         if num == -1 {
             num = 0;
-            let sub_str = String::from_utf8_lossy(sub).to_ascii_uppercase();
             for part in parts {
-                if sub_str.contains(part) {
+                if contains_fragment(sub, part) {
                     num += 1;
                 }
             }
@@ -260,16 +270,13 @@ fn find_repeats_heuristic(
         }
 
         if j < seq.len() - w {
-            let substr1 = &seq[j..j + frag];
-            let substr2 = &seq[j + w - frag + 1..j + w + 1];
+            let leaving = &seq[j..j + frag];
+            let entering = &seq[j + w - frag + 1..j + w + 1];
 
-            let s1 = String::from_utf8_lossy(substr1).to_ascii_uppercase();
-            let s2 = String::from_utf8_lossy(substr2).to_ascii_uppercase();
-
-            if parts.contains(&s1) {
+            if is_known_fragment(parts, leaving) {
                 num -= 1;
             }
-            if parts.contains(&s2) {
+            if is_known_fragment(parts, entering) {
                 num += 1;
             }
         }
@@ -287,15 +294,16 @@ fn main() -> Result<()> {
     let consensus = extract_consensus(Path::new(&args.hmm))?;
     let consensus_len = consensus.len();
 
-    // Setup 10-mer fragments
+    // Setup 10-mer fragments (uppercased, deduplicated)
     let frag = 10;
-    let mut parts = HashSet::new();
+    let mut parts: Vec<Vec<u8>> = Vec::new();
     for i in 0..(consensus_len / frag) {
-        parts.insert(
-            consensus[i * frag..(i + 1) * frag]
-                .to_ascii_uppercase()
-                .to_string(),
-        );
+        let fragment = consensus[i * frag..(i + 1) * frag]
+            .to_ascii_uppercase()
+            .into_bytes();
+        if !parts.contains(&fragment) {
+            parts.push(fragment);
+        }
     }
 
     // Determine thresholds and modes
