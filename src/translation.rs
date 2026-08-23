@@ -65,6 +65,10 @@ pub fn is_dna(seq: &[u8]) -> bool {
 }
 
 /// Convert DNA sequence to RVD list
+///
+/// Anchors at the first LTP motif and walks a fixed 102-bp stride. The RVD
+/// is residues 12/13 of each repeat (1-based), i.e. anchor+11/anchor+12
+/// in 0-based indices relative to the L.
 pub fn dna_to_rvds(seq: &[u8]) -> Vec<String> {
     let mut rvds = Vec::new();
     let aa_seq = translate(seq);
@@ -80,8 +84,8 @@ pub fn dna_to_rvds(seq: &[u8]) -> Vec<String> {
         while curr + 102 <= seq.len() {
             let repeat_dna = &seq[curr..curr + 102];
             let repeat_aa = translate(repeat_dna);
-            if repeat_aa.len() >= 14 {
-                let rvd = format!("{}{}", repeat_aa[12] as char, repeat_aa[13] as char);
+            if repeat_aa.len() >= 13 {
+                let rvd = format!("{}{}", repeat_aa[11] as char, repeat_aa[12] as char);
                 rvds.push(rvd);
             }
             curr += 102;
@@ -157,10 +161,10 @@ mod tests {
     /// 12/13. Build three repeats encoding HD and expect ["HD", "HD", "HD"].
     fn tale_repeat(rvd12: &[u8], rvd13: &[u8]) -> Vec<u8> {
         let mut codons: Vec<&[u8]> = vec![b"CTG", b"ACG", b"CCG"]; // L T P
-        codons.resize(12, b"GCT"); // filler A at codons 3..=11
-        codons.push(rvd12); // codon 12
-        codons.push(rvd13); // codon 13
-        codons.resize(34, b"GCT"); // filler through codon 33
+        codons.resize(11, b"GCT"); // filler A at residues 4..=10
+        codons.push(rvd12); // residue 12
+        codons.push(rvd13); // residue 13
+        codons.resize(34, b"GCT"); // filler through residue 34
         codons.concat()
     }
 

@@ -46,8 +46,8 @@ fn extract_repeats_and_rvds(sequence: &[u8]) -> (Vec<Vec<u8>>, String) {
             let repeat_aa = translate(repeat_dna);
             if repeat_aa.len() >= 13 {
                 if !rvd_str.is_empty() { rvd_str.push('-'); }
+                rvd_str.push(repeat_aa[11] as char);
                 rvd_str.push(repeat_aa[12] as char);
-                rvd_str.push(repeat_aa[13] as char);
             }
             curr += 102;
         }

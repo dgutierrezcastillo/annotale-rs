@@ -8,7 +8,7 @@ use hmmer_pure_rs::profile::{profile_config, P7_LOCAL};
 use hmmer_pure_rs::sequence::Sequence as HmmSequence;
 use hmmer_pure_rs::{Hmm, OProfile, Pipeline, Profile, TopHits};
 use rayon::prelude::*;
-use rust_annotale::{dna_to_rvds, open_sequence_reader, SeqRecord, TALERegion};
+use rust_annotale::{open_sequence_reader, SeqRecord, TALERegion};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -17,6 +17,22 @@ use std::sync::Mutex;
 const CLUSTER_MAX_GAP_BP: usize = 500;
 const PREFILTER_FRAG_BP: usize = 10;
 const TERM_SCAN_STEP: i64 = 5;
+/// Minimum bitscore for a repeats.hmm domain to count as one repeat when
+/// extracting RVDs. Override with env ANNOTALE_EXTRACT_BITS for tuning.
+fn extract_min_domain_bits() -> f32 {
+    static VAL: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *VAL.get_or_init(|| {
+        std::env::var("ANNOTALE_EXTRACT_BITS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(EXTRACT_MIN_DOMAIN_BITS)
+    })
+}
+
+const EXTRACT_MIN_DOMAIN_BITS: f32 = 10.0;
+
+#[allow(dead_code)]
+fn _extract_const_doc() {}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "A Rust implementation of AnnoTALE")]
@@ -408,10 +424,7 @@ impl TALEFinder {
                 mrna_len.saturating_sub(cons_aa) > (cds_end - cds_start);
 
             let rvds = if cds_end - cds_start > 100 {
-                match dna_to_rvds(&sequence[cds_start..cds_end]) {
-                    rvds if !rvds.is_empty() => rvds.join("-"),
-                    _ => "N/A".to_string(),
-                }
+                self.extract_rvds_hmm(id, sequence, cds_start, cds_end)
             } else {
                 "N/A".to_string()
             };
@@ -434,6 +447,128 @@ impl TALEFinder {
         }
 
         final_tales
+    }
+
+    /// Per-repeat HMM-aligned RVD extraction.
+    ///
+    /// Scans the CDS with `repeats.hmm` (a 102-nt nucleotide profile HMM
+    /// modelling one TALE repeat), takes each domain alignment block, and
+    /// reads the RVD diresidue (codons 12/13) from that block alone. Unlike
+    /// the fixed-stride walker both tools shipped with, this cannot drift
+    /// after indels between repeats: every repeat is anchored by its own
+    /// HMM alignment.
+    fn extract_rvds_hmm(&self, id: &str, sequence: &[u8], cds_start: usize, cds_end: usize) -> String {
+        let seq = &sequence[cds_start..cds_end];
+        let mut scorer = self.repeats.lock().unwrap_or_else(|e| e.into_inner());
+
+        let l_val = seq.len();
+        let WindowScorer {
+            hmm,
+            abc,
+            bg,
+            gm,
+            om,
+            pli,
+        } = &mut *scorer;
+        let dsq = abc.digitize(seq);
+        let sq = HmmSequence {
+            name: id.to_string(),
+            acc: String::new(),
+            desc: String::new(),
+            taxid: -1,
+            dsq,
+            n: l_val,
+            l: l_val,
+        };
+        let mut th = TopHits::new();
+        pli.run(gm, om, bg, hmm, &sq, &mut th);
+
+        let mut blocks: Vec<(usize, usize, f32)> = Vec::new();
+        for hit in &th.hits {
+            for domain in &hit.dcl {
+                if domain.bitscore > extract_min_domain_bits() {
+                    blocks.push((
+                        domain.iali.saturating_sub(1) as usize,
+                        domain.jali as usize,
+                        domain.bitscore,
+                    ));
+                }
+            }
+        }
+        if blocks.is_empty() {
+            return "N/A".to_string();
+        }
+        if std::env::var("ANNOTALE_DEBUG").is_ok() {
+            eprintln!(
+                "[debug] rvds {id}: {} blocks {:?} cds_len={l}",
+                blocks.len(),
+                &blocks[..blocks.len().min(40)],
+                l = seq.len()
+            );
+        }
+        blocks.sort_by_key(|b| b.0);
+
+        let mut rvds: Vec<String> = Vec::new();
+        let mut prev_end = 0usize;
+
+        // Lock the CDS reading frame once by majority vote: the correct
+        // phase is the one under which the most blocks open with a
+        // translatable LTP anchor. HMMER bounds are arbitrary bp and do not
+        // respect codons, but the CDS itself is codon-aligned, so one
+        // global phase applies to every block.
+        let mut votes = [0usize; 3];
+        for &(ali_s, ali_e, _) in &blocks {
+            for (phase, vote) in votes.iter_mut().enumerate() {
+                let s = ali_s + ((phase + 3 - ali_s % 3) % 3);
+                if ali_e > s && !rvds_from_block(&seq[s..ali_e]).is_empty() {
+                    *vote += 1;
+                }
+            }
+        }
+        let global_phase = votes
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, v)| **v)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        for (ali_s, ali_e, _bits) in blocks.clone() {
+            let mut s = ali_s.max(prev_end);
+            let ext_floor = prev_end;
+            if ali_e <= s || ali_e > seq.len() {
+                continue;
+            }
+            prev_end = ali_e;
+            s += (global_phase + 3 - s % 3) % 3;
+            if ali_e <= s {
+                continue;
+            }
+            let mut block_rvds = rvds_from_block(&seq[s..ali_e]);
+            if block_rvds.is_empty() && s > ext_floor {
+                // HMMER sometimes trims the repeat's leading anchor residue
+                // off a domain boundary; retry with the start pulled back
+                // toward the previous block (same reading frame).
+                let mut s2 = ext_floor.max(s.saturating_sub(12));
+                s2 += (global_phase + 3 - s2 % 3) % 3;
+                if s2 < s {
+                    block_rvds = rvds_from_block(&seq[s2..ali_e]);
+                }
+            }
+            if std::env::var("ANNOTALE_DEBUG").is_ok() {
+                eprintln!(
+                    "[debug] rvdblock {id} [{s},{ali_e}) len={} -> {:?}",
+                    ali_e - s,
+                    block_rvds
+                );
+            }
+            rvds.extend(block_rvds);
+        }
+
+        if rvds.is_empty() {
+            "N/A".to_string()
+        } else {
+            rvds.join("-")
+        }
     }
 
     /// Faithful port of Java NHMMer.refine(): longest stop-to-stop ORF over
@@ -536,6 +671,36 @@ impl TALEFinder {
 /// True when `haystack` contains `needle` as a contiguous substring (byte-exact).
 fn contains_fragment(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// All RVD diresidues (codons 12/13) from one HMM-aligned block.
+///
+/// A real TALE repeat opens with the anchor motif `L?{P,Q}` (LTP, LPP,
+/// LTQ variants are all observed); the RVD is residues 12/13 (1-based)
+/// after that anchor. Block boundaries from the HMM alignment wobble by a
+/// few bp around the repeat start, so the anchor is searched within the
+/// first few residues. Requiring it near the block start rejects spurious
+/// domains over non-canonical terminal repeats, which fixed-stride
+/// walkers happily transcribe into garbage diresidues.
+fn rvds_from_block(block: &[u8]) -> Vec<String> {
+    const ANCHOR_WINDOW: usize = 10;
+    const RVD_FIRST_RESIDUE: usize = 11; // 0-based offset of residue 12
+
+    let aa = rust_annotale::translate(block);
+    for i in 0..aa.len().min(ANCHOR_WINDOW) {
+        if aa[i] == b'L'
+            && i + 2 < aa.len()
+            && (aa[i + 2] == b'P' || aa[i + 2] == b'Q')
+            && aa.len() >= i + RVD_FIRST_RESIDUE + 2
+        {
+            return vec![format!(
+                "{}{}",
+                aa[i + RVD_FIRST_RESIDUE] as char,
+                aa[i + RVD_FIRST_RESIDUE + 1] as char
+            )];
+        }
+    }
+    Vec::new()
 }
 
 /// Greedy peak picking: repeatedly take the global maximum, zero out its
@@ -874,5 +1039,54 @@ mod tests {
     fn contains_fragment_is_exact_byte_match() {
         assert!(contains_fragment(b"AAAACGTCCCGGG", b"ACGTCCC"));
         assert!(!contains_fragment(b"aaaacgtcccggg", b"ACGTCCC"));
+    }
+
+    /// One TALE repeat: 34 aa (102 bp), RVD diresidue at residues 12/13
+    /// (1-based) = 0-based codon indices 11/12.
+    fn tale_repeat(rvd12: &[u8], rvd13: &[u8]) -> Vec<u8> {
+        let mut codons: Vec<&[u8]> = vec![b"CTG", b"ACG", b"CCG"]; // L T P
+        codons.resize(11, b"GCT"); // filler A at codons 4..=10
+        codons.push(rvd12); // residue 12
+        codons.push(rvd13); // residue 13
+        codons.resize(34, b"GCT"); // filler through residue 34
+        codons.concat()
+    }
+
+    #[test]
+    fn rvds_from_block_reads_diresidue_via_ltp_anchor() {
+        let block = tale_repeat(b"CAT", b"GAT"); // H D
+        assert_eq!(rvds_from_block(&block), vec!["HD"]);
+    }
+
+    #[test]
+    fn rvds_from_block_accepts_lpp_and_ltq_anchor_variants() {
+        // LPP start (repeat 3 of PthXo1) and LTQ start both encode RVDs.
+        let mut lpp: Vec<&[u8]> = vec![b"CTC", b"CCA", b"CCA"]; // L P P
+        lpp.resize(11, b"GCT");
+        lpp.push(b"CAT");
+        lpp.push(b"GAT");
+        lpp.resize(34, b"GCT");
+        assert_eq!(rvds_from_block(&lpp.concat()), vec!["HD"]);
+
+        let mut ltq: Vec<&[u8]> = vec![b"CTG", b"ACA", b"CAA"]; // L T Q
+        ltq.resize(11, b"GCT");
+        ltq.push(b"CAT");
+        ltq.push(b"GAT");
+        ltq.resize(34, b"GCT");
+        assert_eq!(rvds_from_block(&ltq.concat()), vec!["HD"]);
+    }
+
+    #[test]
+    fn rvds_from_block_rejects_blocks_without_start_anchor() {
+        // Anchors within a few residues of the block start are tolerated
+        // (HMMER boundary wobble); anchors further in are rejected.
+        let mut near = tale_repeat(b"CAT", b"GAT");
+        near.splice(0..0, vec![b'A'; 6]); // anchor lands at aa index 2 -> accepted
+        assert_eq!(rvds_from_block(&near), vec!["HD"]);
+
+        let mut far = tale_repeat(b"CAT", b"GAT");
+        far.splice(0..0, vec![b'A'; 36]); // anchor at aa index 12 -> beyond window
+        assert!(rvds_from_block(&far).is_empty());
+        assert!(rvds_from_block(&far[1..]).is_empty()); // off-by-one frame
     }
 }
