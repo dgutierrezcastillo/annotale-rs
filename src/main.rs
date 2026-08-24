@@ -31,9 +31,6 @@ fn extract_min_domain_bits() -> f32 {
 
 const EXTRACT_MIN_DOMAIN_BITS: f32 = 10.0;
 
-#[allow(dead_code)]
-fn _extract_const_doc() {}
-
 #[derive(Parser, Debug)]
 #[command(author, version, about = "A Rust implementation of AnnoTALE")]
 struct Args {
@@ -149,9 +146,8 @@ struct TALEFinder {
     window_len: usize,
     /// Java peak threshold: consensus_len * ln(1.3) nats, stored in bits.
     peak_threshold_bits: f32,
-    /// Consensus 10-bp fragments used by the rolling window prefilter.
+    /// Consensus 10-bp fragments used by the rolling window prefilter and k-mer gate.
     prefilter_parts: Vec<Vec<u8>>,
-    kmer_fragments: Vec<Vec<u8>>,
     min_kmers: usize,
     use_kmer_filter: bool,
     repeats: Mutex<WindowScorer>,
@@ -214,7 +210,6 @@ impl TALEFinder {
             window_len,
             peak_threshold_bits,
             prefilter_parts: rust_annotale::extract_kmers(&consensus, PREFILTER_FRAG_BP),
-            kmer_fragments: rust_annotale::extract_kmers(&consensus, 10),
             min_kmers,
             use_kmer_filter,
             repeats: Mutex::new(WindowScorer::new(repeats_hmm, window_len)),
@@ -225,11 +220,11 @@ impl TALEFinder {
 
     #[inline]
     fn passes_kmer_filter(&self, sequence: &[u8]) -> bool {
-        if !self.use_kmer_filter || self.kmer_fragments.is_empty() {
+        if !self.use_kmer_filter || self.prefilter_parts.is_empty() {
             return true;
         }
         let mut matches = 0;
-        for kmer in &self.kmer_fragments {
+        for kmer in &self.prefilter_parts {
             if sequence.windows(kmer.len()).any(|w| w.eq_ignore_ascii_case(kmer)) {
                 matches += 1;
                 if matches >= self.min_kmers {
