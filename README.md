@@ -1,5 +1,12 @@
 # annotale-rs
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust Version](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Bioinformatics](https://img.shields.io/badge/Topic-Bioinformatics-blue.svg)](https://github.com/topics/bioinformatics)
+[![Genomics](https://img.shields.io/badge/Topic-Genomics-purple.svg)](https://github.com/topics/genomics)
+[![TALE](https://img.shields.io/badge/Topic-TALE-green.svg)](https://github.com/topics/tale)
+[![Sequence Analysis](https://img.shields.io/badge/Topic-Sequence%20Analysis-red.svg)](https://github.com/topics/sequence-analysis)
+
 A highly optimized, multi-threaded Rust implementation of the **AnnoTALE** (Annotation of TAL Effectors) bioinformatics suite. This toolkit enables high-throughput scanning, analysis, renaming, and comparative genomics of Transcription Activator-Like Effectors (TALEs) in bacterial genomes (e.g., *Xanthomonas* species).
 
 By leveraging Rust's safety guarantees and data-parallelism via `rayon`, `annotale-rs` achieves consistent, ultra-fast performance, solving major computational scaling bottlenecks in the original Java implementation.
